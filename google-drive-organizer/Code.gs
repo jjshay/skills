@@ -130,29 +130,22 @@ function organizeStaleFiles() {
 
 function findStaleFiles(cutoffDate, excludeFolderId) {
   var files = [];
-  var query = 'modifiedDate < "' + cutoffDate.toISOString() + '"'
+  var query = 'modifiedTime < "' + cutoffDate.toISOString() + '"'
     + ' and trashed = false'
     + ' and mimeType != "application/vnd.google-apps.folder"'
     + ' and "me" in owners';
-
-  var results = Drive.Files.list({
-    q: query,
-    maxResults: 500,
-    fields: "items(id,title,mimeType,modifiedDate,parents),nextPageToken",
-    orderBy: "modifiedDate desc"
-  });
 
   var pageToken = null;
   do {
     var params = {
       q: query,
-      maxResults: 500,
-      fields: "items(id,title,mimeType,modifiedDate,parents),nextPageToken"
+      pageSize: 500,
+      fields: "files(id,name,mimeType,modifiedTime,parents),nextPageToken"
     };
     if (pageToken) params.pageToken = pageToken;
 
-    results = Drive.Files.list(params);
-    var items = results.items || [];
+    var results = Drive.Files.list(params);
+    var items = results.files || [];
 
     for (var i = 0; i < items.length; i++) {
       var item = items[i];
@@ -173,7 +166,7 @@ function findStaleFiles(cutoffDate, excludeFolderId) {
 function isInsideFolder(fileMetadata, folderId) {
   var parents = fileMetadata.parents || [];
   for (var i = 0; i < parents.length; i++) {
-    if (parents[i].id === folderId) return true;
+    if (parents[i] === folderId) return true;
   }
   return false;
 }
