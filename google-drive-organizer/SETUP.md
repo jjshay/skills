@@ -30,6 +30,7 @@ Organized Projects/
 3. Files already inside `Organized Projects/` are skipped
 4. Creates numbered folders and moves files in
 5. Logs every move to a spreadsheet called "Drive Organizer Log" (with undo support)
+6. Processes in 4.5-minute batches with auto-continuation — handles thousands of files without hitting the Apps Script 6-minute execution limit
 
 ## Setup (5 minutes)
 
@@ -45,7 +46,7 @@ Organized Projects/
 
 1. In the Apps Script editor, click **Services** (+ icon) in the left sidebar
 2. Scroll to **Drive API** and click **Add**
-3. Keep the default identifier "Drive" and version "v2"
+3. Keep the default identifier "Drive" and version "v3"
 
 ### 3. Test with a dry run
 
