@@ -69,6 +69,9 @@ function organizeStaleFiles() {
   var rootFolderId = rootFolder.getId();
 
   var state = loadState(props);
+  if (!state || !state.phase) {
+    state = { phase: "scan", runTimestamp: null, scannedFiles: [], scanPageToken: null };
+  }
 
   if (state.phase === "scan") {
     if (!state.runTimestamp) {
@@ -165,6 +168,7 @@ function organizeStaleFiles() {
 // ── Scan Phase (paginated, resumable) ──
 
 function scanStaleFiles(state, excludeFolderId, startTime) {
+  if (!state) state = { scanPageToken: null, scannedFiles: [] };
   var cutoffDate = new Date();
   cutoffDate.setDate(cutoffDate.getDate() - CONFIG.STALE_DAYS);
 
