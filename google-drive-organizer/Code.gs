@@ -86,10 +86,10 @@ function organizeStaleFiles() {
   var cutoffDate = new Date();
   cutoffDate.setDate(cutoffDate.getDate() - CONFIG.STALE_DAYS);
 
-  var query = 'modifiedTime < "' + cutoffDate.toISOString() + '"'
-    + ' and trashed = false'
-    + ' and mimeType != "application/vnd.google-apps.folder"'
-    + ' and "me" in owners';
+  var query = "modifiedTime < '" + cutoffDate.toISOString() + "'"
+    + " and trashed = false"
+    + " and mimeType != 'application/vnd.google-apps.folder'"
+    + " and 'me' in owners";
 
   var parentCache = {};
   var movedThisBatch = 0;
@@ -335,10 +335,10 @@ function dryRun() {
 
   var output = [];
   var totalFiles = 0;
-  var query = 'modifiedTime < "' + cutoffDate.toISOString() + '"'
-    + ' and trashed = false'
-    + ' and mimeType != "application/vnd.google-apps.folder"'
-    + ' and "me" in owners';
+  var query = "modifiedTime < '" + cutoffDate.toISOString() + "'"
+    + " and trashed = false"
+    + " and mimeType != 'application/vnd.google-apps.folder'"
+    + " and 'me' in owners";
 
   var pageToken = null;
   do {
