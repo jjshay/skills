@@ -86,7 +86,8 @@ function organizeStaleFiles() {
   var cutoffDate = new Date();
   cutoffDate.setDate(cutoffDate.getDate() - CONFIG.STALE_DAYS);
 
-  var query = "modifiedTime < '" + cutoffDate.toISOString() + "'"
+  var dateStr = cutoffDate.toISOString().replace(/\.\d{3}Z$/, "");
+  var query = "modifiedTime < '" + dateStr + "'"
     + " and trashed = false"
     + " and mimeType != 'application/vnd.google-apps.folder'"
     + " and 'me' in owners";
@@ -335,7 +336,8 @@ function dryRun() {
 
   var output = [];
   var totalFiles = 0;
-  var query = "modifiedTime < '" + cutoffDate.toISOString() + "'"
+  var dateStr = cutoffDate.toISOString().replace(/\.\d{3}Z$/, "");
+  var query = "modifiedTime < '" + dateStr + "'"
     + " and trashed = false"
     + " and mimeType != 'application/vnd.google-apps.folder'"
     + " and 'me' in owners";
@@ -372,4 +374,49 @@ function dryRun() {
   output.unshift("=== DRY RUN -- " + totalFiles + " stale files found ===\n");
   Logger.log(output.join("\n"));
   return output.join("\n");
+}
+
+function testDriveQuery() {
+  try {
+    var r1 = Drive.Files.list({ pageSize: 1, q: "trashed = false", fields: "files(id,name)" });
+    Logger.log("Test 1 PASSED: basic query works. Found: " + (r1.files || []).length);
+  } catch (e) {
+    Logger.log("Test 1 FAILED: " + e.message);
+  }
+
+  try {
+    var r2 = Drive.Files.list({ pageSize: 1, q: "trashed = false and mimeType != 'application/vnd.google-apps.folder'", fields: "files(id,name)" });
+    Logger.log("Test 2 PASSED: mimeType filter works. Found: " + (r2.files || []).length);
+  } catch (e) {
+    Logger.log("Test 2 FAILED: " + e.message);
+  }
+
+  try {
+    var r3 = Drive.Files.list({ pageSize: 1, q: "trashed = false and 'me' in owners", fields: "files(id,name)" });
+    Logger.log("Test 3 PASSED: owners filter works. Found: " + (r3.files || []).length);
+  } catch (e) {
+    Logger.log("Test 3 FAILED: " + e.message);
+  }
+
+  try {
+    var cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - 60);
+    var dateStr = cutoff.toISOString().replace(/\.\d{3}Z$/, "");
+    var r4 = Drive.Files.list({ pageSize: 1, q: "modifiedTime < '" + dateStr + "'", fields: "files(id,name)" });
+    Logger.log("Test 4 PASSED: date filter works. Found: " + (r4.files || []).length);
+  } catch (e) {
+    Logger.log("Test 4 FAILED: " + e.message);
+  }
+
+  try {
+    var cutoff2 = new Date();
+    cutoff2.setDate(cutoff2.getDate() - 60);
+    var dateStr2 = cutoff2.toISOString().replace(/\.\d{3}Z$/, "");
+    var fullQuery = "modifiedTime < '" + dateStr2 + "' and trashed = false and mimeType != 'application/vnd.google-apps.folder' and 'me' in owners";
+    Logger.log("Full query: " + fullQuery);
+    var r5 = Drive.Files.list({ pageSize: 1, q: fullQuery, fields: "files(id,name)" });
+    Logger.log("Test 5 PASSED: full query works. Found: " + (r5.files || []).length);
+  } catch (e) {
+    Logger.log("Test 5 FAILED: " + e.message);
+  }
 }
