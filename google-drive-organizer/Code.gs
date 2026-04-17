@@ -58,8 +58,6 @@ var CONFIG = {
   }
 };
 
-// ── Main Entry Point ──
-
 function organizeStaleFiles() {
   var props = PropertiesService.getScriptProperties();
   var startTime = new Date();
@@ -68,107 +66,23 @@ function organizeStaleFiles() {
   var rootFolder = getOrCreateRootFolder();
   var rootFolderId = rootFolder.getId();
 
-  var state = loadState(props);
-  if (!state || !state.phase) {
-    state = { phase: "scan", runTimestamp: null, scannedFiles: [], scanPageToken: null };
+  var raw = props.getProperty("ORGANIZER_STATE");
+  var pageToken = null;
+  var runTimestamp;
+  var totalMoved = 0;
+
+  if (raw) {
+    var saved = JSON.parse(raw);
+    pageToken = saved.pageToken || null;
+    runTimestamp = saved.runTimestamp;
+    totalMoved = saved.totalMoved || 0;
+    logEntry(log, runTimestamp, "INFO",
+      "--- Resuming (page token exists, " + totalMoved + " moved so far) ---", "");
+  } else {
+    runTimestamp = new Date().toISOString();
+    logEntry(log, runTimestamp, "INFO", "--- Run started ---", "");
   }
 
-  if (state.phase === "scan") {
-    if (!state.runTimestamp) {
-      state.runTimestamp = new Date().toISOString();
-      logEntry(log, state.runTimestamp, "INFO", "--- Run started ---", "");
-    }
-
-    var scanResult = scanStaleFiles(state, rootFolderId, startTime);
-    state = scanResult.state;
-
-    if (scanResult.timedOut) {
-      saveState(props, state);
-      logEntry(log, state.runTimestamp, "INFO",
-        "--- Scan paused: " + state.scannedFiles.length + " files found so far. Resuming in 1 min. ---", "");
-      scheduleResume();
-      return;
-    }
-
-    logEntry(log, state.runTimestamp, "INFO",
-      "Scan complete: " + state.scannedFiles.length + " stale files found", "");
-
-    if (state.scannedFiles.length === 0) {
-      logEntry(log, state.runTimestamp, "INFO", "No stale files to organize", "");
-      clearState(props);
-      return;
-    }
-
-    var assignments = buildAssignments(state.scannedFiles, rootFolder);
-    state.phase = "move";
-    state.assignments = assignments;
-    state.scannedFiles = null;
-    state.moveIndex = 0;
-
-    if (isTimedOut(startTime)) {
-      saveState(props, state);
-      logEntry(log, state.runTimestamp, "INFO",
-        "--- Classification done. " + assignments.length + " files to move. Resuming in 1 min. ---", "");
-      scheduleResume();
-      return;
-    }
-  }
-
-  if (state.phase === "move") {
-    var total = state.assignments.length;
-    var idx = state.moveIndex || 0;
-
-    logEntry(log, state.runTimestamp, "INFO",
-      "--- Moving files (" + (total - idx) + " remaining) ---", "");
-
-    while (idx < total) {
-      if (isTimedOut(startTime)) {
-        state.moveIndex = idx;
-        saveState(props, state);
-        logEntry(log, state.runTimestamp, "INFO",
-          "--- Paused: " + idx + "/" + total + " moved. Resuming in 1 min. ---", "");
-        scheduleResume();
-        return;
-      }
-
-      var a = state.assignments[idx];
-      try {
-        var file = DriveApp.getFileById(a.fileId);
-        var projectFolder = getOrCreateSubfolder(rootFolder, a.projectFolderName);
-        var categoryFolder = getOrCreateSubfolder(projectFolder, a.categoryFolderName);
-
-        var originalParentId = "root";
-        var parents = file.getParents();
-        if (parents.hasNext()) {
-          originalParentId = parents.next().getId();
-        }
-
-        file.moveTo(categoryFolder);
-
-        logEntry(log, state.runTimestamp, "MOVED",
-          a.fileNumber + " | " + a.fileName,
-          "From: " + originalParentId + " | To: " + categoryFolder.getId() + " | FileID: " + a.fileId
-        );
-      } catch (e) {
-        logEntry(log, state.runTimestamp, "ERROR",
-          "Failed: " + (a.fileName || a.fileId),
-          e.message + " | FileID: " + a.fileId
-        );
-      }
-      idx++;
-    }
-
-    clearState(props);
-    cleanupContinuationTriggers();
-    logEntry(log, state.runTimestamp, "INFO", "--- Run complete ---",
-      "Organized " + total + " files");
-  }
-}
-
-// ── Scan Phase (paginated, resumable) ──
-
-function scanStaleFiles(state, excludeFolderId, startTime) {
-  if (!state) state = { scanPageToken: null, scannedFiles: [] };
   var cutoffDate = new Date();
   cutoffDate.setDate(cutoffDate.getDate() - CONFIG.STALE_DAYS);
 
@@ -177,19 +91,25 @@ function scanStaleFiles(state, excludeFolderId, startTime) {
     + ' and mimeType != "application/vnd.google-apps.folder"'
     + ' and "me" in owners';
 
-  var pageToken = state.scanPageToken || null;
-  var files = state.scannedFiles || [];
+  var parentCache = {};
+  var movedThisBatch = 0;
 
   do {
     if (isTimedOut(startTime)) {
-      state.scanPageToken = pageToken;
-      state.scannedFiles = files;
-      return { state: state, timedOut: true };
+      props.setProperty("ORGANIZER_STATE", JSON.stringify({
+        pageToken: pageToken,
+        runTimestamp: runTimestamp,
+        totalMoved: totalMoved
+      }));
+      logEntry(log, runTimestamp, "INFO",
+        "--- Paused: " + totalMoved + " total moved. Resuming in 1 min. ---", "");
+      scheduleResume();
+      return;
     }
 
     var params = {
       q: query,
-      pageSize: 100,
+      pageSize: 50,
       fields: "files(id,name,mimeType,parents),nextPageToken"
     };
     if (pageToken) params.pageToken = pageToken;
@@ -198,89 +118,81 @@ function scanStaleFiles(state, excludeFolderId, startTime) {
     var items = results.files || [];
 
     for (var i = 0; i < items.length; i++) {
+      if (isTimedOut(startTime)) {
+        props.setProperty("ORGANIZER_STATE", JSON.stringify({
+          pageToken: pageToken,
+          runTimestamp: runTimestamp,
+          totalMoved: totalMoved
+        }));
+        logEntry(log, runTimestamp, "INFO",
+          "--- Paused mid-page: " + totalMoved + " total moved. Resuming in 1 min. ---", "");
+        scheduleResume();
+        return;
+      }
+
       var item = items[i];
       var parentIds = item.parents || [];
       var isExcluded = false;
       for (var j = 0; j < parentIds.length; j++) {
-        if (parentIds[j] === excludeFolderId) { isExcluded = true; break; }
+        if (parentIds[j] === rootFolderId) { isExcluded = true; break; }
       }
-      if (!isExcluded) {
-        files.push({
-          id: item.id,
-          name: item.name,
-          mimeType: item.mimeType,
-          parentId: parentIds.length > 0 ? parentIds[0] : null
-        });
+      if (isExcluded) continue;
+
+      var projectName = getProjectName(item, parentCache);
+      var categoryName = detectCategoryFromMime(item.mimeType);
+
+      var projectFolder = getOrCreateSubfolder(rootFolder, projectName);
+      var categoryFolder = getOrCreateSubfolder(projectFolder, categoryName);
+
+      try {
+        var file = DriveApp.getFileById(item.id);
+        var originalParentId = parentIds.length > 0 ? parentIds[0] : "root";
+        file.moveTo(categoryFolder);
+        totalMoved++;
+
+        logEntry(log, runTimestamp, "MOVED",
+          item.name,
+          "From: " + originalParentId + " | To: " + categoryFolder.getId()
+            + " | FileID: " + item.id
+            + " | Project: " + projectName + " | Category: " + categoryName
+        );
+      } catch (e) {
+        logEntry(log, runTimestamp, "ERROR",
+          "Failed: " + item.name,
+          e.message + " | FileID: " + item.id
+        );
       }
     }
 
     pageToken = results.nextPageToken || null;
   } while (pageToken);
 
-  state.scanPageToken = null;
-  state.scannedFiles = files;
-  return { state: state, timedOut: false };
+  props.deleteProperty("ORGANIZER_STATE");
+  cleanupContinuationTriggers();
+  logEntry(log, runTimestamp, "INFO", "--- Run complete ---",
+    "Organized " + totalMoved + " files total");
 }
 
-// ── Classification Phase ──
+function getProjectName(item, cache) {
+  var parentIds = item.parents || [];
+  if (parentIds.length === 0) return "Uncategorized";
 
-function buildAssignments(scannedFiles, rootFolder) {
-  var projectMap = {};
+  var parentId = parentIds[0];
+  if (cache[parentId]) return cache[parentId];
 
-  for (var i = 0; i < scannedFiles.length; i++) {
-    var f = scannedFiles[i];
-    var projectName = detectProjectFromMetadata(f);
-    var categoryName = detectCategoryFromMime(f.mimeType);
-
-    if (!projectMap[projectName]) projectMap[projectName] = {};
-    if (!projectMap[projectName][categoryName]) projectMap[projectName][categoryName] = [];
-    projectMap[projectName][categoryName].push(f);
-  }
-
-  var assignments = [];
-  var projectNumber = getNextProjectNumber(rootFolder);
-  var projectKeys = Object.keys(projectMap).sort();
-
-  for (var p = 0; p < projectKeys.length; p++) {
-    var projectName = projectKeys[p];
-    var categories = projectMap[projectName];
-    var pNum = projectNumber + p;
-
-    var categoryKeys = Object.keys(categories).sort();
-    for (var c = 0; c < categoryKeys.length; c++) {
-      var categoryName = categoryKeys[c];
-      var files = categories[categoryName];
-      var cNum = pNum + "." + (c + 1);
-
-      for (var f = 0; f < files.length; f++) {
-        assignments.push({
-          fileId: files[f].id,
-          fileName: files[f].name,
-          projectFolderName: pNum + " - " + projectName,
-          categoryFolderName: cNum + " - " + categoryName,
-          fileNumber: cNum + "." + (f + 1)
-        });
-      }
+  try {
+    var parentFolder = DriveApp.getFolderById(parentId);
+    var parentName = parentFolder.getName();
+    if (parentName !== "My Drive" && parentName !== "Drive") {
+      var clean = cleanName(parentName);
+      cache[parentId] = clean;
+      return clean;
     }
-  }
+  } catch (e) {}
 
-  return assignments;
-}
-
-function detectProjectFromMetadata(fileMeta) {
-  if (fileMeta.parentId) {
-    try {
-      var parentFolder = DriveApp.getFolderById(fileMeta.parentId);
-      var parentName = parentFolder.getName();
-      if (parentName !== "My Drive" && parentName !== "Drive") {
-        return cleanProjectName(parentName);
-      }
-    } catch (e) {}
-  }
-
-  var prefixMatch = fileMeta.name.match(/^([A-Za-z]+[\s_-]?[A-Za-z]*)/);
+  var prefixMatch = item.name.match(/^([A-Za-z]+[\s_-]?[A-Za-z]*)/);
   if (prefixMatch && prefixMatch[1].length > 2) {
-    return cleanProjectName(prefixMatch[1]);
+    return cleanName(prefixMatch[1]);
   }
 
   return "Uncategorized";
@@ -291,35 +203,13 @@ function detectCategoryFromMime(mimeType) {
   for (var i = 0; i < categories.length; i++) {
     var cat = categories[i];
     if (cat === "Other") continue;
-    if (CONFIG.MIME_CATEGORIES[cat].indexOf(mimeType) !== -1) {
-      return cat;
-    }
+    if (CONFIG.MIME_CATEGORIES[cat].indexOf(mimeType) !== -1) return cat;
   }
   return "Other";
 }
 
-function cleanProjectName(name) {
-  return name
-    .replace(/[_-]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .substring(0, 40);
-}
-
-// ── State Management ──
-
-function loadState(props) {
-  var raw = props.getProperty("ORGANIZER_STATE");
-  if (raw) return JSON.parse(raw);
-  return { phase: "scan", runTimestamp: null, scannedFiles: [], scanPageToken: null };
-}
-
-function saveState(props, state) {
-  props.setProperty("ORGANIZER_STATE", JSON.stringify(state));
-}
-
-function clearState(props) {
-  props.deleteProperty("ORGANIZER_STATE");
+function cleanName(name) {
+  return name.replace(/[_-]/g, " ").replace(/\s+/g, " ").trim().substring(0, 40);
 }
 
 function isTimedOut(startTime) {
@@ -333,8 +223,6 @@ function scheduleResume() {
     .create();
 }
 
-// ── Folder Helpers ──
-
 function getOrCreateRootFolder() {
   var folders = DriveApp.getFoldersByName(CONFIG.ROOT_FOLDER_NAME);
   if (folders.hasNext()) return folders.next();
@@ -346,21 +234,6 @@ function getOrCreateSubfolder(parentFolder, name) {
   if (folders.hasNext()) return folders.next();
   return parentFolder.createFolder(name);
 }
-
-function getNextProjectNumber(rootFolder) {
-  var subfolders = rootFolder.getFolders();
-  var maxNum = 0;
-  while (subfolders.hasNext()) {
-    var match = subfolders.next().getName().match(/^(\d+)/);
-    if (match) {
-      var num = parseInt(match[1], 10);
-      if (num > maxNum) maxNum = num;
-    }
-  }
-  return maxNum + 1;
-}
-
-// ── Logging ──
 
 function getOrCreateLogSheet() {
   var files = DriveApp.getFilesByName(CONFIG.LOG_SHEET_NAME);
@@ -379,8 +252,6 @@ function logEntry(sheet, runId, level, message, details) {
   sheet.appendRow([new Date(), runId, level, message, details]);
 }
 
-// ── Undo ──
-
 function undoLastRun() {
   var log = getOrCreateLogSheet();
   var data = log.getDataRange().getValues();
@@ -389,17 +260,14 @@ function undoLastRun() {
   for (var i = data.length - 1; i >= 1; i--) {
     if (data[i][2] === "MOVED") { lastRunId = data[i][1]; break; }
   }
-
   if (!lastRunId) { Logger.log("No moves found to undo."); return; }
 
   var undone = 0;
   for (var i = 1; i < data.length; i++) {
     if (data[i][1] !== lastRunId || data[i][2] !== "MOVED") continue;
-
     var details = data[i][4];
     var fromMatch = details.match(/From:\s*(\S+)/);
     var fileMatch = details.match(/FileID:\s*(\S+)/);
-
     if (fromMatch && fileMatch) {
       try {
         var file = DriveApp.getFileById(fileMatch[1]);
@@ -413,13 +281,10 @@ function undoLastRun() {
       }
     }
   }
-
   logEntry(log, new Date().toISOString(), "UNDO",
     "Undid " + undone + " moves from run " + lastRunId, "");
   Logger.log("Undo complete: " + undone + " files restored.");
 }
-
-// ── Trigger Management ──
 
 function setupBiweeklyTrigger() {
   removeExistingTriggers();
@@ -428,8 +293,7 @@ function setupBiweeklyTrigger() {
     .everyDays(CONFIG.TRIGGER_INTERVAL_DAYS)
     .atHour(3)
     .create();
-  Logger.log("Bi-weekly trigger created: runs every "
-    + CONFIG.TRIGGER_INTERVAL_DAYS + " days at 3 AM.");
+  Logger.log("Trigger created: every " + CONFIG.TRIGGER_INTERVAL_DAYS + " days at 3 AM.");
 }
 
 function removeExistingTriggers() {
@@ -456,23 +320,21 @@ function cleanupContinuationTriggers() {
   }
 }
 
-// ── Reset (if a run gets stuck) ──
-
 function resetState() {
   PropertiesService.getScriptProperties().deleteProperty("ORGANIZER_STATE");
   cleanupContinuationTriggers();
   Logger.log("State cleared and continuation triggers removed.");
 }
 
-// ── Dry Run ──
-
 function dryRun() {
   var cutoffDate = new Date();
   cutoffDate.setDate(cutoffDate.getDate() - CONFIG.STALE_DAYS);
   var rootFolder = getOrCreateRootFolder();
   var rootFolderId = rootFolder.getId();
+  var parentCache = {};
 
-  var files = [];
+  var output = [];
+  var totalFiles = 0;
   var query = 'modifiedTime < "' + cutoffDate.toISOString() + '"'
     + ' and trashed = false'
     + ' and mimeType != "application/vnd.google-apps.folder"'
@@ -497,33 +359,17 @@ function dryRun() {
       for (var j = 0; j < parentIds.length; j++) {
         if (parentIds[j] === rootFolderId) { isExcluded = true; break; }
       }
-      if (!isExcluded) {
-        files.push({
-          id: item.id,
-          name: item.name,
-          mimeType: item.mimeType,
-          parentId: parentIds.length > 0 ? parentIds[0] : null
-        });
-      }
+      if (isExcluded) continue;
+
+      var project = getProjectName(item, parentCache);
+      var category = detectCategoryFromMime(item.mimeType);
+      output.push(project + " / " + category + " / " + item.name);
+      totalFiles++;
     }
     pageToken = results.nextPageToken || null;
   } while (pageToken);
 
-  var assignments = buildAssignments(files, rootFolder);
-
-  var output = ["=== DRY RUN — " + files.length + " stale files found ===\n"];
-  var currentProject = "";
-
-  for (var i = 0; i < assignments.length; i++) {
-    var a = assignments[i];
-    if (a.projectFolderName !== currentProject) {
-      currentProject = a.projectFolderName;
-      output.push(currentProject);
-    }
-    output.push("  " + a.categoryFolderName);
-    output.push("    " + a.fileNumber + " | " + a.fileName);
-  }
-
+  output.unshift("=== DRY RUN -- " + totalFiles + " stale files found ===\n");
   Logger.log(output.join("\n"));
   return output.join("\n");
 }
