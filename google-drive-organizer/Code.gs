@@ -58,74 +58,134 @@ var CONFIG = {
 };
 
 function organizeStaleFiles() {
+  var props = PropertiesService.getScriptProperties();
+  var state = props.getProperty("ORGANIZER_STATE");
+  var startTime = new Date();
+  var MAX_RUNTIME_MS = 4.5 * 60 * 1000;
+
+  var log = getOrCreateLogSheet();
+  var rootFolder = getOrCreateRootFolder();
   var cutoffDate = new Date();
   cutoffDate.setDate(cutoffDate.getDate() - CONFIG.STALE_DAYS);
 
-  var log = getOrCreateLogSheet();
-  var runTimestamp = new Date().toISOString();
-  var rootFolder = getOrCreateRootFolder();
+  var runTimestamp, fileIds, projectAssignments;
 
-  logEntry(log, runTimestamp, "INFO", "--- Run started ---", "");
+  if (state) {
+    var parsed = JSON.parse(state);
+    runTimestamp = parsed.runTimestamp;
+    fileIds = parsed.fileIds;
+    projectAssignments = parsed.projectAssignments;
+    logEntry(log, runTimestamp, "INFO",
+      "--- Resuming batch (" + fileIds.length + " files remaining) ---", "");
+  } else {
+    runTimestamp = new Date().toISOString();
+    logEntry(log, runTimestamp, "INFO", "--- Run started ---", "");
 
-  var staleFiles = findStaleFiles(cutoffDate, rootFolder.getId());
+    var staleFiles = findStaleFiles(cutoffDate, rootFolder.getId());
+    if (staleFiles.length === 0) {
+      logEntry(log, runTimestamp, "INFO", "No stale files found", "");
+      return;
+    }
 
-  if (staleFiles.length === 0) {
-    logEntry(log, runTimestamp, "INFO", "No stale files found", "");
-    return;
-  }
+    logEntry(log, runTimestamp, "INFO", "Found " + staleFiles.length + " stale files", "");
 
-  logEntry(log, runTimestamp, "INFO", "Found " + staleFiles.length + " stale files", "");
+    var projectMap = classifyFilesIntoProjects(staleFiles);
+    var projectNumber = getNextProjectNumber(rootFolder);
 
-  var projectMap = classifyFilesIntoProjects(staleFiles);
-  var projectNumber = getNextProjectNumber(rootFolder);
+    fileIds = [];
+    projectAssignments = [];
+    var projectKeys = Object.keys(projectMap).sort();
+    for (var p = 0; p < projectKeys.length; p++) {
+      var projectName = projectKeys[p];
+      var categories = projectMap[projectName];
+      var pNum = projectNumber + p;
 
-  var projectKeys = Object.keys(projectMap).sort();
-  for (var p = 0; p < projectKeys.length; p++) {
-    var projectName = projectKeys[p];
-    var categories = projectMap[projectName];
+      var categoryKeys = Object.keys(categories).sort();
+      for (var c = 0; c < categoryKeys.length; c++) {
+        var categoryName = categoryKeys[c];
+        var files = categories[categoryName];
+        var cNum = pNum + "." + (c + 1);
 
-    var projectFolderName = projectNumber + " - " + projectName;
-    var projectFolder = getOrCreateSubfolder(rootFolder, projectFolderName);
-
-    var categoryKeys = Object.keys(categories).sort();
-    for (var c = 0; c < categoryKeys.length; c++) {
-      var categoryName = categoryKeys[c];
-      var files = categories[categoryName];
-
-      var categoryNumber = projectNumber + "." + (c + 1);
-      var categoryFolderName = categoryNumber + " - " + categoryName;
-      var categoryFolder = getOrCreateSubfolder(projectFolder, categoryFolderName);
-
-      for (var f = 0; f < files.length; f++) {
-        var file = files[f];
-        var fileNumber = categoryNumber + "." + (f + 1);
-
-        try {
-          var originalParents = file.getParents();
-          var originalParentId = "root";
-          if (originalParents.hasNext()) {
-            originalParentId = originalParents.next().getId();
-          }
-
-          file.moveTo(categoryFolder);
-
-          logEntry(log, runTimestamp, "MOVED",
-            fileNumber + " | " + file.getName(),
-            "From: " + originalParentId + " | To: " + categoryFolder.getId() + " | FileID: " + file.getId()
-          );
-        } catch (e) {
-          logEntry(log, runTimestamp, "ERROR",
-            "Failed to move: " + file.getName(),
-            e.message + " | FileID: " + file.getId()
-          );
+        for (var f = 0; f < files.length; f++) {
+          fileIds.push(files[f].getId());
+          projectAssignments.push({
+            projectFolderName: pNum + " - " + projectName,
+            categoryFolderName: cNum + " - " + categoryName,
+            fileNumber: cNum + "." + (f + 1)
+          });
         }
       }
     }
-    projectNumber++;
   }
 
+  var processed = 0;
+  while (fileIds.length > 0) {
+    if (new Date() - startTime > MAX_RUNTIME_MS) {
+      var remaining = fileIds.length;
+      props.setProperty("ORGANIZER_STATE", JSON.stringify({
+        runTimestamp: runTimestamp,
+        fileIds: fileIds,
+        projectAssignments: projectAssignments
+      }));
+
+      logEntry(log, runTimestamp, "INFO",
+        "--- Paused: " + processed + " moved, " + remaining + " remaining. Auto-resuming in 1 min. ---", "");
+
+      ScriptApp.newTrigger("organizeStaleFiles")
+        .timeBased()
+        .after(60 * 1000)
+        .create();
+      return;
+    }
+
+    var fileId = fileIds.shift();
+    var assignment = projectAssignments.shift();
+
+    try {
+      var file = DriveApp.getFileById(fileId);
+      var projectFolder = getOrCreateSubfolder(rootFolder, assignment.projectFolderName);
+      var categoryFolder = getOrCreateSubfolder(projectFolder, assignment.categoryFolderName);
+
+      var originalParents = file.getParents();
+      var originalParentId = "root";
+      if (originalParents.hasNext()) {
+        originalParentId = originalParents.next().getId();
+      }
+
+      file.moveTo(categoryFolder);
+      processed++;
+
+      logEntry(log, runTimestamp, "MOVED",
+        assignment.fileNumber + " | " + file.getName(),
+        "From: " + originalParentId + " | To: " + categoryFolder.getId() + " | FileID: " + fileId
+      );
+    } catch (e) {
+      logEntry(log, runTimestamp, "ERROR",
+        "Failed to move file " + fileId,
+        e.message
+      );
+    }
+  }
+
+  props.deleteProperty("ORGANIZER_STATE");
+  cleanupContinuationTriggers();
   logEntry(log, runTimestamp, "INFO", "--- Run complete ---",
-    "Processed " + staleFiles.length + " files into " + projectKeys.length + " projects");
+    "Processed " + processed + " files in this batch");
+}
+
+function cleanupContinuationTriggers() {
+  var triggers = ScriptApp.getProjectTriggers();
+  for (var i = 0; i < triggers.length; i++) {
+    var trigger = triggers[i];
+    if (trigger.getHandlerFunction() === "organizeStaleFiles"
+        && trigger.getTriggerSource() === ScriptApp.TriggerSource.CLOCK
+        && trigger.getEventType() === ScriptApp.EventType.CLOCK) {
+      var isOneOff = true;
+      try { trigger.getMinuteInterval(); isOneOff = false; } catch(e) {}
+      try { trigger.getDayInterval(); isOneOff = false; } catch(e) {}
+      if (isOneOff) ScriptApp.deleteTrigger(trigger);
+    }
+  }
 }
 
 function findStaleFiles(cutoffDate, excludeFolderId) {
