@@ -1,5 +1,10 @@
 # Skills — Automation Scripts
 
+<!-- portfolio-navigation:start -->
+[Project brief](docs/PROJECT_BRIEF.md) · [Structured project record](project.json) · [Portfolio](https://github.com/jjshay)
+
+<!-- portfolio-navigation:end -->
+
 A collection of automation scripts for organizing and managing personal productivity workflows.
 
 ---

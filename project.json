@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "name": "skills",
+  "title": "Workspace Automation Scripts",
+  "category": "Developer operations",
+  "summary": "Drive organization needs repeatable batching, an execution record, and a way to reverse changes.",
+  "status": "Source available; runtime not revalidated in this documentation review",
+  "visibility": "public",
+  "reviewed_on": "2026-09-11",
+  "reviewed_commit": "fbd3399b9c1f6e8cdbb8780e9d2559e6dc3eeccc",
+  "architecture": "Stale-file selection \u2192 project and category grouping \u2192 batched moves \u2192 log and persisted progress \u2192 undo.",
+  "evidence": [
+    {
+      "path": "google-drive-organizer/Code.gs",
+      "role": "Implementation component supporting the data flow described above."
+    }
+  ],
+  "validation": "Repository tree and referenced source reviewed. Existing application tests, hosted deployments, paid providers, and external mutations were not re-run in this documentation review.",
+  "limitations": "Batching works within execution limits, while reversal depends on preserving original file locations.",
+  "next_improvement": "Demonstrate dry-run, interrupted continuation, and undo on an isolated test folder.",
+  "related_repositories": [
+    "clawhub"
+  ]
+}
